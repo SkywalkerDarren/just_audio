@@ -20,6 +20,7 @@ import com.google.android.exoplayer2.SimpleExoPlayer;
 import com.google.android.exoplayer2.Timeline;
 import com.google.android.exoplayer2.audio.AudioAttributes;
 import com.google.android.exoplayer2.audio.AudioListener;
+import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory;
 import com.google.android.exoplayer2.metadata.Metadata;
 import com.google.android.exoplayer2.metadata.MetadataOutput;
 import com.google.android.exoplayer2.metadata.icy.IcyHeaders;
@@ -567,11 +568,13 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
         String id = (String)map.get("id");
         switch ((String)map.get("type")) {
         case "progressive":
-            return new ProgressiveMediaSource.Factory(buildDataSourceFactory())
-                    .createMediaSource(new MediaItem.Builder()
-                            .setUri(Uri.parse((String)map.get("uri")))
-                            .setTag(id)
-                            .build());
+            return new ProgressiveMediaSource.Factory(
+                    buildDataSourceFactory(),
+                    new DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true)
+            ).createMediaSource(new MediaItem.Builder()
+                    .setUri(Uri.parse((String) map.get("uri")))
+                    .setTag(id)
+                    .build());
         case "dash":
             return new DashMediaSource.Factory(buildDataSourceFactory())
                     .createMediaSource(new MediaItem.Builder()
