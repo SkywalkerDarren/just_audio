@@ -16,12 +16,13 @@ class MyApp extends StatefulWidget {
   _MyAppState createState() => _MyAppState();
 }
 
-class _MyAppState extends State<MyApp> {
-  final AudioPlayer _player = AudioPlayer();
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+  final _player = AudioPlayer();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance?.addObserver(this);
     SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
       statusBarColor: Colors.black,
     ));
@@ -49,10 +50,21 @@ class _MyAppState extends State<MyApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance?.removeObserver(this);
     // Release decoders and buffers back to the operating system making them
     // available for other apps to use.
     _player.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      // Release the player's resources when not in use. We use "stop" so that
+      // if the app resumes later, it will still remember what position to
+      // resume from.
+      _player.stop();
+    }
   }
 
   /// Collects the data useful for displaying in a seek bar, using a handy
@@ -121,6 +133,7 @@ class ControlButtons extends StatelessWidget {
               divisions: 10,
               min: 0.0,
               max: 1.0,
+              value: player.volume,
               stream: player.volumeStream,
               onChanged: player.setVolume,
             );
@@ -179,6 +192,7 @@ class ControlButtons extends StatelessWidget {
                 divisions: 10,
                 min: 0.5,
                 max: 1.5,
+                value: player.speed,
                 stream: player.speedStream,
                 onChanged: player.setSpeed,
               );

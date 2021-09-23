@@ -7,6 +7,7 @@ import android.media.audiofx.LoudnessEnhancer;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
+import android.os.Looper;
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.DefaultLivePlaybackSpeedControl;
 import com.google.android.exoplayer2.DefaultLoadControl;
@@ -14,8 +15,10 @@ import com.google.android.exoplayer2.ExoPlaybackException;
 import com.google.android.exoplayer2.LivePlaybackSpeedControl;
 import com.google.android.exoplayer2.LoadControl;
 import com.google.android.exoplayer2.MediaItem;
+import com.google.android.exoplayer2.PlaybackException;
 import com.google.android.exoplayer2.PlaybackParameters;
 import com.google.android.exoplayer2.Player;
+import com.google.android.exoplayer2.Player.PositionInfo;
 import com.google.android.exoplayer2.SimpleExoPlayer;
 import com.google.android.exoplayer2.Timeline;
 import com.google.android.exoplayer2.audio.AudioAttributes;
@@ -27,7 +30,6 @@ import com.google.android.exoplayer2.metadata.icy.IcyHeaders;
 import com.google.android.exoplayer2.metadata.icy.IcyInfo;
 import com.google.android.exoplayer2.source.ClippingMediaSource;
 import com.google.android.exoplayer2.source.ConcatenatingMediaSource;
-import com.google.android.exoplayer2.source.LoopingMediaSource;
 import com.google.android.exoplayer2.source.MediaSource;
 import com.google.android.exoplayer2.source.ProgressiveMediaSource;
 import com.google.android.exoplayer2.source.ShuffleOrder;
@@ -41,7 +43,6 @@ import com.google.android.exoplayer2.trackselection.TrackSelectionArray;
 import com.google.android.exoplayer2.upstream.DataSource;
 import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory;
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource;
-import com.google.android.exoplayer2.upstream.DefaultHttpDataSourceFactory;
 import com.google.android.exoplayer2.util.MimeTypes;
 import com.google.android.exoplayer2.util.Util;
 import io.flutter.Log;
@@ -61,7 +62,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
-public class AudioPlayer implements MethodCallHandler, Player.EventListener, AudioListener, MetadataOutput {
+public class AudioPlayer implements MethodCallHandler, Player.Listener, MetadataOutput {
 
     static final String TAG = "AudioPlayer";
 
@@ -95,12 +96,13 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
     private List<AudioEffect> audioEffects = new ArrayList<AudioEffect>();
     private Map<String, AudioEffect> audioEffectsMap = new HashMap<String, AudioEffect>();
     private int lastPlaylistLength = 0;
+    private Map<String, Object> pendingPlaybackEvent;
 
     private SimpleExoPlayer player;
     private Integer audioSessionId;
     private MediaSource mediaSource;
     private Integer currentIndex;
-    private final Handler handler = new Handler();
+    private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable bufferWatcher = new Runnable() {
         @Override
         public void run() {
@@ -111,19 +113,21 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
             long newBufferedPosition = player.getBufferedPosition();
             if (newBufferedPosition != bufferedPosition) {
                 // This method updates bufferedPosition.
-                broadcastPlaybackEvent();
+                broadcastImmediatePlaybackEvent();
             }
-            switch (processingState) {
-            case buffering:
+            switch (player.getPlaybackState()) {
+            case Player.STATE_BUFFERING:
                 handler.postDelayed(this, 200);
                 break;
-            case ready:
+            case Player.STATE_READY:
                 if (player.getPlayWhenReady()) {
                     handler.postDelayed(this, 500);
                 } else {
                     handler.postDelayed(this, 1000);
                 }
                 break;
+            default:
+                // Stop watching buffer
             }
         }
     };
@@ -173,8 +177,7 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
         handler.post(bufferWatcher);
     }
 
-    @Override
-    public void onAudioSessionIdChanged(int audioSessionId) {
+    private void setAudioSessionId(int audioSessionId) {
         if (audioSessionId == C.AUDIO_SESSION_ID_UNSET) {
             this.audioSessionId = null;
         } else {
@@ -192,7 +195,13 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
                 audioEffectsMap.put((String)json.get("type"), audioEffect);
             }
         }
-        broadcastPlaybackEvent();
+        enqueuePlaybackEvent();
+    }
+
+    @Override
+    public void onAudioSessionIdChanged(int audioSessionId) {
+        setAudioSessionId(audioSessionId);
+        broadcastPendingPlaybackEvent();
     }
 
     @Override
@@ -201,7 +210,7 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
             final Metadata.Entry entry = metadata.get(i);
             if (entry instanceof IcyInfo) {
                 icyInfo = (IcyInfo) entry;
-                broadcastPlaybackEvent();
+                broadcastImmediatePlaybackEvent();
             }
         }
     }
@@ -219,7 +228,7 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
                         final Metadata.Entry entry = metadata.get(k);
                         if (entry instanceof IcyHeaders) {
                             icyHeaders = (IcyHeaders) entry;
-                            broadcastPlaybackEvent();
+                            broadcastImmediatePlaybackEvent();
                         }
                     }
                 }
@@ -240,15 +249,15 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
     }
 
     @Override
-    public void onPositionDiscontinuity(int reason) {
+    public void onPositionDiscontinuity(PositionInfo oldPosition, PositionInfo newPosition, int reason) {
         updatePosition();
         switch (reason) {
-        case Player.DISCONTINUITY_REASON_PERIOD_TRANSITION:
+        case Player.DISCONTINUITY_REASON_AUTO_TRANSITION:
         case Player.DISCONTINUITY_REASON_SEEK:
             updateCurrentIndex();
             break;
         }
-        broadcastPlaybackEvent();
+        broadcastImmediatePlaybackEvent();
     }
 
     @Override
@@ -260,13 +269,13 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
             initialPos = C.TIME_UNSET;
         }
         if (updateCurrentIndex()) {
-            broadcastPlaybackEvent();
+            broadcastImmediatePlaybackEvent();
         }
         if (player.getPlaybackState() == Player.STATE_ENDED) {
             try {
                 if (player.getPlayWhenReady()) {
-                    if (player.hasNext()) {
-                        player.next();
+                    if (player.hasNextWindow()) {
+                        player.seekToNextWindow();
                     } else if (lastPlaylistLength == 0 && player.getMediaItemCount() > 0) {
                         player.seekTo(0, 0L);
                     }
@@ -299,7 +308,8 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
         case Player.STATE_READY:
             if (player.getPlayWhenReady())
                 updatePosition();
-            transition(ProcessingState.ready);
+            processingState = ProcessingState.ready;
+            broadcastImmediatePlaybackEvent();
             if (prepareResult != null) {
                 Map<String, Object> response = new HashMap<>();
                 response.put("duration", getDuration() == C.TIME_UNSET ? null : (1000 * getDuration()));
@@ -317,14 +327,16 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
         case Player.STATE_BUFFERING:
             updatePositionIfChanged();
             if (processingState != ProcessingState.buffering && processingState != ProcessingState.loading) {
-                transition(ProcessingState.buffering);
-                startWatchingBuffer();
+                processingState = ProcessingState.buffering;
+                broadcastImmediatePlaybackEvent();
             }
+            startWatchingBuffer();
             break;
         case Player.STATE_ENDED:
             if (processingState != ProcessingState.completed) {
                 updatePosition();
-                transition(ProcessingState.completed);
+                processingState = ProcessingState.completed;
+                broadcastImmediatePlaybackEvent();
             }
             if (prepareResult != null) {
                 Map<String, Object> response = new HashMap<>();
@@ -344,26 +356,33 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
     }
 
     @Override
-    public void onPlayerError(ExoPlaybackException error) {
-        switch (error.type) {
-        case ExoPlaybackException.TYPE_SOURCE:
-            Log.e(TAG, "TYPE_SOURCE: " + error.getSourceException().getMessage());
-            break;
+    public void onPlayerError(PlaybackException error) {
+        if (error instanceof ExoPlaybackException) {
+            final ExoPlaybackException exoError = (ExoPlaybackException)error;
+            switch (exoError.type) {
+            case ExoPlaybackException.TYPE_SOURCE:
+                Log.e(TAG, "TYPE_SOURCE: " + exoError.getSourceException().getMessage());
+                break;
 
-        case ExoPlaybackException.TYPE_RENDERER:
-            Log.e(TAG, "TYPE_RENDERER: " + error.getRendererException().getMessage());
-            break;
+            case ExoPlaybackException.TYPE_RENDERER:
+                Log.e(TAG, "TYPE_RENDERER: " + exoError.getRendererException().getMessage());
+                break;
 
-        case ExoPlaybackException.TYPE_UNEXPECTED:
-            Log.e(TAG, "TYPE_UNEXPECTED: " + error.getUnexpectedException().getMessage());
-            break;
+            case ExoPlaybackException.TYPE_UNEXPECTED:
+                Log.e(TAG, "TYPE_UNEXPECTED: " + exoError.getUnexpectedException().getMessage());
+                break;
 
-        default:
-            Log.e(TAG, "default: " + error.getUnexpectedException().getMessage());
+            default:
+                Log.e(TAG, "default ExoPlaybackException: " + exoError.getUnexpectedException().getMessage());
+            }
+            // TODO: send both errorCode and type
+            sendError(String.valueOf(exoError.type), exoError.getMessage());
+        } else {
+            Log.e(TAG, "default PlaybackException: " + error.getMessage());
+            sendError(String.valueOf(error.errorCode), error.getMessage());
         }
-        sendError(String.valueOf(error.type), error.getMessage());
         errorCount++;
-        if (player.hasNext() && currentIndex != null && errorCount <= 5) {
+        if (player.hasNextWindow() && currentIndex != null && errorCount <= 5) {
             int nextIndex = currentIndex + 1;
             Timeline timeline = player.getCurrentTimeline();
             // This condition is due to: https://github.com/ryanheise/just_audio/pull/310
@@ -491,6 +510,8 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
         } catch (Exception e) {
             e.printStackTrace();
             result.error("Error: " + e, null, null);
+        } finally {
+            broadcastPendingPlaybackEvent();
         }
     }
 
@@ -609,7 +630,11 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
         case "looping":
             Integer count = (Integer)map.get("count");
             MediaSource looperChild = getAudioSource(map.get("child"));
-            return new LoopingMediaSource(looperChild, count);
+            MediaSource[] looperChildren = new MediaSource[count];
+            for (int i = 0; i < looperChildren.length; i++) {
+                looperChildren[i] = looperChild;
+            }
+            return new ConcatenatingMediaSource(looperChildren);
         default:
             throw new IllegalArgumentException("Unknown AudioSource type: " + map.get("type"));
         }
@@ -662,12 +687,9 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
 
     private DataSource.Factory buildDataSourceFactory() {
         String userAgent = Util.getUserAgent(context, "just_audio");
-        DataSource.Factory httpDataSourceFactory = new DefaultHttpDataSourceFactory(
-                userAgent,
-                DefaultHttpDataSource.DEFAULT_CONNECT_TIMEOUT_MILLIS,
-                DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS,
-                true
-        );
+        DataSource.Factory httpDataSourceFactory = new DefaultHttpDataSource.Factory()
+            .setUserAgent(userAgent)
+            .setAllowCrossProtocolRedirects(true);
         return new DefaultDataSourceFactory(context, httpDataSourceFactory);
     }
 
@@ -689,7 +711,8 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
         errorCount = 0;
         prepareResult = result;
         updatePosition();
-        transition(ProcessingState.loading);
+        processingState = ProcessingState.loading;
+        enqueuePlaybackEvent();
         this.mediaSource = mediaSource;
         // TODO: pass in initial position here.
         player.setMediaSource(mediaSource);
@@ -706,15 +729,12 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
                 builder.setLivePlaybackSpeedControl(livePlaybackSpeedControl);
             }
             player = builder.build();
-            onAudioSessionIdChanged(player.getAudioSessionId());
-            player.addMetadataOutput(this);
+            setAudioSessionId(player.getAudioSessionId());
             player.addListener(this);
-            player.addAudioListener(this);
         }
     }
 
     private void setAudioAttributes(int contentType, int flags, int usage) {
-        ensurePlayerInitialized();
         AudioAttributes.Builder builder = new AudioAttributes.Builder();
         builder.setContentType(contentType);
         builder.setFlags(flags);
@@ -764,7 +784,8 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
         ((Equalizer)audioEffectsMap.get("AndroidEqualizer")).setBandLevel((short)bandIndex, (short)(Math.round(gain * 1000.0)));
     }
 
-    private void broadcastPlaybackEvent() {
+    /// Creates an event based on the current state.
+    private Map<String, Object> createPlaybackEvent() {
         final Map<String, Object> event = new HashMap<String, Object>();
         Long duration = getDuration() == C.TIME_UNSET ? null : (1000 * getDuration());
         bufferedPosition = player != null ? player.getBufferedPosition() : 0L;
@@ -776,8 +797,36 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
         event.put("duration", duration);
         event.put("currentIndex", currentIndex);
         event.put("androidAudioSessionId", audioSessionId);
+        return event;
+    }
 
-        eventChannel.success(event);
+    // Broadcast the pending playback event if it was set.
+    private void broadcastPendingPlaybackEvent() {
+        if (pendingPlaybackEvent != null) {
+            eventChannel.success(pendingPlaybackEvent);
+            pendingPlaybackEvent = null;
+        }
+    }
+
+    // Set a pending playback event that should be broadcast at
+    // a later time. If we're in a Flutter method call, it will
+    // be broadcast just before that method call returns. If
+    // we're in an asynchronous callback, it is up to the caller
+    // to eventually broadcast that event via
+    // broadcastPendingPlaybackEvent.
+    //
+    // If this is called multiple times before
+    // broadcastPendingPlaybackEvent, only the last event is
+    // broadcast.
+    private void enqueuePlaybackEvent() {
+        final Map<String, Object> event = new HashMap<String, Object>();
+        pendingPlaybackEvent = createPlaybackEvent();
+    }
+
+    // Broadcasts a new event immediately.
+    private void broadcastImmediatePlaybackEvent() {
+        enqueuePlaybackEvent();
+        broadcastPendingPlaybackEvent();
     }
 
     private Map<String, Object> collectIcyMetadata() {
@@ -802,8 +851,12 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
     }
 
     private long getCurrentPosition() {
-        if (processingState == ProcessingState.none || processingState == ProcessingState.loading) {
-            return 0;
+        if (initialPos != C.TIME_UNSET) {
+            return initialPos;
+        } else if (processingState == ProcessingState.none || processingState == ProcessingState.loading) {
+            long pos = player.getCurrentPosition();
+            if (pos < 0) pos = 0;
+            return pos;
         } else if (seekPos != null && seekPos != C.TIME_UNSET) {
             return seekPos;
         } else {
@@ -828,11 +881,6 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
         eventChannel.error(errorCode, errorMsg, null);
     }
 
-    private void transition(final ProcessingState newState) {
-        processingState = newState;
-        broadcastPlaybackEvent();
-    }
-
     private String getLowerCaseExtension(Uri uri) {
         // Until ExoPlayer provides automatic detection of media source types, we
         // rely on the file extension. When this is absent, as a temporary
@@ -852,7 +900,6 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
             playResult.success(new HashMap<String, Object>());
         }
         playResult = result;
-        startWatchingBuffer();
         player.setPlayWhenReady(true);
         updatePosition();
         if (processingState == ProcessingState.completed && playResult != null) {
@@ -881,14 +928,14 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
         player.setPlaybackParameters(new PlaybackParameters(speed, params.pitch));
         if (player.getPlayWhenReady())
             updatePosition();
-        broadcastPlaybackEvent();
+        enqueuePlaybackEvent();
     }
 
     public void setPitch(final float pitch) {
         PlaybackParameters params = player.getPlaybackParameters();
         if (params.pitch == pitch) return;
         player.setPlaybackParameters(new PlaybackParameters(params.speed, pitch));
-        broadcastPlaybackEvent();
+        enqueuePlaybackEvent();
     }
 
     public void setSkipSilenceEnabled(final boolean enabled) {
@@ -935,7 +982,8 @@ public class AudioPlayer implements MethodCallHandler, Player.EventListener, Aud
         if (player != null) {
             player.release();
             player = null;
-            transition(ProcessingState.none);
+            processingState = ProcessingState.none;
+            broadcastImmediatePlaybackEvent();
         }
         eventChannel.endOfStream();
         dataEventChannel.endOfStream();
