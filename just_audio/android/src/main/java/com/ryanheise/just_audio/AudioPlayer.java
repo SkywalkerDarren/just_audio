@@ -590,7 +590,9 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
         switch ((String)map.get("type")) {
         case "progressive":
             return new ProgressiveMediaSource.Factory(
-                    buildDataSourceFactory()
+                    buildDataSourceFactory(),
+                    new DefaultExtractorsFactory()
+                            .setConstantBitrateSeekingEnabled(true)
             ).createMediaSource(new MediaItem.Builder()
                     .setUri(Uri.parse((String) map.get("uri")))
                     .setTag(id)
