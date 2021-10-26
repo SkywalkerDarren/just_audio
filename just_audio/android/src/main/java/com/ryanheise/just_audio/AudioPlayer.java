@@ -722,11 +722,7 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
 
     private void ensurePlayerInitialized() {
         if (player == null) {
-            DefaultRenderersFactory renderersFactory = new DefaultRenderersFactory(context)
-                    .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER);
-            DefaultExtractorsFactory extractorsFactory = new DefaultExtractorsFactory()
-                    .setConstantBitrateSeekingEnabled(true);
-            SimpleExoPlayer.Builder builder = new SimpleExoPlayer.Builder(context, renderersFactory, extractorsFactory);
+            SimpleExoPlayer.Builder builder = new SimpleExoPlayer.Builder(context);
             if (loadControl != null) {
                 builder.setLoadControl(loadControl);
             }
