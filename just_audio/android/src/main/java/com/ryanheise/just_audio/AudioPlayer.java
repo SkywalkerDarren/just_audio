@@ -1,5 +1,7 @@
 package com.ryanheise.just_audio;
 
+import static com.google.android.exoplayer2.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON;
+
 import android.content.Context;
 import android.media.audiofx.AudioEffect;
 import android.media.audiofx.Equalizer;
@@ -11,6 +13,7 @@ import android.os.Looper;
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.DefaultLivePlaybackSpeedControl;
 import com.google.android.exoplayer2.DefaultLoadControl;
+import com.google.android.exoplayer2.DefaultRenderersFactory;
 import com.google.android.exoplayer2.ExoPlaybackException;
 import com.google.android.exoplayer2.LivePlaybackSpeedControl;
 import com.google.android.exoplayer2.LoadControl;
@@ -720,7 +723,9 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
 
     private void ensurePlayerInitialized() {
         if (player == null) {
-            SimpleExoPlayer.Builder builder = new SimpleExoPlayer.Builder(context);
+            DefaultRenderersFactory factory = new DefaultRenderersFactory(context);
+            factory.setExtensionRendererMode(EXTENSION_RENDERER_MODE_ON);
+            SimpleExoPlayer.Builder builder = new SimpleExoPlayer.Builder(context, factory);
             if (loadControl != null) {
                 builder.setLoadControl(loadControl);
             }
