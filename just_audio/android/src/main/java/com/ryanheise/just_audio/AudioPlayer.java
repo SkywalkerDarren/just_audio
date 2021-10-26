@@ -590,8 +590,7 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
         switch ((String)map.get("type")) {
         case "progressive":
             return new ProgressiveMediaSource.Factory(
-                    buildDataSourceFactory(),
-                    new DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true)
+                    buildDataSourceFactory()
             ).createMediaSource(new MediaItem.Builder()
                     .setUri(Uri.parse((String) map.get("uri")))
                     .setTag(id)
@@ -721,9 +720,11 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
 
     private void ensurePlayerInitialized() {
         if (player == null) {
-            DefaultRenderersFactory factory = new DefaultRenderersFactory(context);
-            factory.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER);
-            SimpleExoPlayer.Builder builder = new SimpleExoPlayer.Builder(context, factory);
+            DefaultRenderersFactory renderersFactory = new DefaultRenderersFactory(context)
+                    .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER);
+            DefaultExtractorsFactory extractorsFactory = new DefaultExtractorsFactory()
+                    .setConstantBitrateSeekingEnabled(true);
+            SimpleExoPlayer.Builder builder = new SimpleExoPlayer.Builder(context, renderersFactory, extractorsFactory);
             if (loadControl != null) {
                 builder.setLoadControl(loadControl);
             }
